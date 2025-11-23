@@ -1,7 +1,12 @@
+using System;
+using System.Collections.Generic;
+
 namespace Game.Domain
 {
     public interface IGameTurnRepository
     {
-        // TODO: Спроектировать интерфейс исходя из потребностей ConsoleApp
+        GameTurnEntity Insert(GameTurnEntity gameTurn);
+        List<GameTurnEntity> GetLastTurns(Guid gameId, int turnsCount);
+        List<GameTurnEntity> GetTurnsByGame(Guid gameId);
     }
 }

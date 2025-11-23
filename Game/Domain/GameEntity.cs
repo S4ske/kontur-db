@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MongoDB.Bson.Serialization.Attributes;
 
 namespace Game.Domain
 {
     public class GameEntity
     {
+        [BsonElement]
         private readonly List<Player> players;
 
         public GameEntity(int turnsCount)
@@ -13,6 +15,7 @@ namespace Game.Domain
         {
         }
 
+        [BsonConstructor]
         public GameEntity(Guid id, GameStatus status, int turnsCount, int currentTurnIndex, List<Player> players)
         {
             Id = id;
@@ -22,12 +25,7 @@ namespace Game.Domain
             this.players = players;
         }
 
-        public Guid Id
-        {
-            get;
-            // ReSharper disable once AutoPropertyCanBeMadeGetOnly.Local For MongoDB
-            private set;
-        }
+        public Guid Id { get; private set; }
 
         public IReadOnlyList<Player> Players => players.AsReadOnly();
 
@@ -41,16 +39,18 @@ namespace Game.Domain
         {
             if (Status != GameStatus.WaitingToStart)
                 throw new ArgumentException(Status.ToString());
+
             players.Add(new Player(user.Id, user.Login));
-            if (Players.Count == 2)
+
+            if (players.Count == 2)
                 Status = GameStatus.Playing;
         }
 
         public bool IsFinished()
         {
-            return CurrentTurnIndex >= TurnsCount
-                   || Status == GameStatus.Finished
-                   || Status == GameStatus.Canceled;
+            return Status == GameStatus.Finished
+                   || Status == GameStatus.Canceled
+                   || CurrentTurnIndex >= TurnsCount;
         }
 
         public void Cancel()
@@ -59,44 +59,74 @@ namespace Game.Domain
                 Status = GameStatus.Canceled;
         }
 
-        public bool HaveDecisionOfEveryPlayer => Players.All(p => p.Decision.HasValue);
+        public bool HaveDecisionOfEveryPlayer => players.All(p => p.Decision.HasValue);
 
         public void SetPlayerDecision(Guid userId, PlayerDecision decision)
         {
             if (Status != GameStatus.Playing)
                 throw new InvalidOperationException(Status.ToString());
-            foreach (var player in Players.Where(p => p.UserId == userId))
+
+            foreach (var player in players.Where(p => p.UserId == userId))
             {
                 if (player.Decision.HasValue)
                     throw new InvalidOperationException(player.Decision.ToString());
+
                 player.Decision = decision;
             }
         }
 
         public GameTurnEntity FinishTurn()
         {
-            var winnerId = Guid.Empty;
-            for (int i = 0; i < 2; i++)
+            if (!HaveDecisionOfEveryPlayer)
+                throw new InvalidOperationException("Not all players made decisions");
+
+            var turn = new GameTurnEntity(Id, CurrentTurnIndex)
             {
-                var player = Players[i];
-                var opponent = Players[1 - i];
-                if (!player.Decision.HasValue || !opponent.Decision.HasValue)
-                    throw new InvalidOperationException();
-                if (player.Decision.Value.Beats(opponent.Decision.Value))
-                {
-                    player.Score++;
-                    winnerId = player.UserId;
-                }
+                Players = players
+                    .Select(p => new PlayerTurnResult
+                    {
+                        UserId = p.UserId,
+                        UserName = p.Name,
+                        Decision = p.Decision.Value
+                    })
+                    .ToList()
+            };
+
+            var decisions = players.Select(p => p.Decision.Value).Distinct().ToList();
+
+            if (decisions.Count == 2)
+            {
+                var winning = GetWinningDecision(decisions[0], decisions[1]);
+                var winner = players.First(p => p.Decision == winning);
+
+                winner.Score++;
+                turn.WinnerId = winner.UserId;
+
+                foreach (var result in turn.Players)
+                    result.Result = result.UserId == winner.UserId ? TurnResult.Won : TurnResult.Lost;
             }
-            //TODO Заполнить все внутри GameTurnEntity, в том числе winnerId
-            var result = new GameTurnEntity();
-            // Это должно быть после создания GameTurnEntity
-            foreach (var player in Players)
-                player.Decision = null;
+            else
+            {
+                foreach (var result in turn.Players)
+                    result.Result = TurnResult.Draw;
+            }
+
+            foreach (var p in players)
+                p.Decision = null;
+
             CurrentTurnIndex++;
-            if (CurrentTurnIndex == TurnsCount)
-                Status = GameStatus.Finished;
-            return result;
+
+            return turn;
+        }
+
+        private static PlayerDecision GetWinningDecision(PlayerDecision d1, PlayerDecision d2)
+        {
+            if ((d1 == PlayerDecision.Rock && d2 == PlayerDecision.Scissors) ||
+                (d1 == PlayerDecision.Scissors && d2 == PlayerDecision.Paper) ||
+                (d1 == PlayerDecision.Paper && d2 == PlayerDecision.Rock))
+                return d1;
+
+            return d2;
         }
     }
 }
